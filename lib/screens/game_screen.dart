@@ -8,6 +8,7 @@ import '../models/teacher.dart';
 import '../services/maze_generator.dart';
 import '../widgets/maze_view.dart';
 import 'tribute_screen.dart';
+import '../main.dart';
 
 class LevelConfig {
   final int rows, cols, maxFlowers, maxLetters;
@@ -57,6 +58,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    playBgmNormal();
     _loadLevel();
   }
 

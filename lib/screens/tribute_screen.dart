@@ -8,6 +8,7 @@ import '../models/teacher.dart';
 import '../services/teacher_gift_repository.dart';
 import '../widgets/gift_summary_view.dart';
 import '../widgets/teacher_avatar.dart';
+import '../main.dart';
 
 /// Màn hình gặp giáo viên sau 3 ải: gửi hoa + lời chúc + lời nhắn cá nhân,
 /// rồi hiển thị tổng quà giáo viên đã nhận.
@@ -35,6 +36,7 @@ class _TributeScreenState extends State<TributeScreen> {
   @override
   void initState() {
     super.initState();
+    playBgmSoft();
     _confettiController = ConfettiController(duration: const Duration(seconds: 4));
     Future.delayed(const Duration(milliseconds: 300), () {
       if (mounted) _confettiController.play();

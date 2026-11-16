@@ -102,7 +102,7 @@ const List<Teacher> kTeachers = [
   ),
   Teacher(
     id: 't10',
-    honorific: 'Thầy',
+    honorific: 'Cô',
     name: 'Từ Ngọc Thảo',
     birthYear: 1990,
     degree: 'Thạc sĩ',

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 import 'config/app_config.dart';
 import 'screens/home_screen.dart';
@@ -8,14 +9,32 @@ import 'services/local_teacher_gift_repository.dart';
 import 'services/supabase_teacher_gift_repository.dart';
 import 'services/teacher_gift_repository.dart';
 
+// Global Audio Manager
+final AudioPlayer bgmPlayer = AudioPlayer();
+bool isBgmStarted = false;
+
+void playBgmNormal() {
+  if (!isBgmStarted) {
+    isBgmStarted = true;
+    bgmPlayer.setReleaseMode(ReleaseMode.loop);
+    bgmPlayer.play(AssetSource('audio/bgm.mp3'), volume: 0.4);
+  } else {
+    bgmPlayer.setVolume(0.4);
+  }
+}
+
+void playBgmSoft() {
+  if (isBgmStarted) {
+    bgmPlayer.setVolume(0.1);
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final repository = await _createRepository();
   runApp(TriAnApp(repository: repository));
 }
 
-/// Chọn implementation theo cấu hình --dart-define (xem AppConfig).
-/// Thiếu URL/key Supabase => tự động quay về lưu cục bộ.
 Future<TeacherGiftRepository> _createRepository() async {
   if (AppConfig.supabaseReady) {
     await Supabase.initialize(
@@ -35,7 +54,6 @@ class TriAnApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        // UI chỉ phụ thuộc interface, không biết Local hay Supabase.
         Provider<TeacherGiftRepository>.value(value: repository),
       ],
       child: MaterialApp(
