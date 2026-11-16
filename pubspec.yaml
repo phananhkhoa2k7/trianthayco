@@ -1,0 +1,24 @@
+name: tri_an_thay_co
+description: Web game tri ân thầy cô ngày 20/11 - mê cung tặng hoa.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  confetti: ^0.8.0
+  shared_preferences: ^2.2.3
+  supabase_flutter: ^2.5.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
