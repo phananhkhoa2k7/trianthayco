@@ -1,25 +1,73 @@
 import 'dart:async';
 import 'dart:math';
+
+import 'package:confetti/confetti.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../data/wishes.dart';
 import '../models/teacher.dart';
+import '../services/audio_service.dart';
 import '../services/maze_generator.dart';
+import '../theme/app_theme.dart';
 import '../widgets/maze_view.dart';
+import '../widgets/mute_button.dart';
+import '../widgets/petal_background.dart';
+import '../widgets/sprites.dart';
 import 'tribute_screen.dart';
-import '../main.dart';
 
 class LevelConfig {
   final int rows, cols, maxFlowers, maxLetters;
-  const LevelConfig(this.rows, this.cols, this.maxFlowers, this.maxLetters);
+  final LevelTheme theme;
+  const LevelConfig(this.rows, this.cols, this.maxFlowers, this.maxLetters, this.theme);
 }
 
+/// 3 ải: mỗi ải một khung cảnh riêng, mê cung to dần.
 const List<LevelConfig> kLevels = [
-  LevelConfig(7, 7, 3, 2),
-  LevelConfig(9, 9, 3, 2),
-  LevelConfig(11, 11, 3, 2),
+  LevelConfig(
+    7, 7, 3, 2,
+    LevelTheme(
+      name: 'Sân trường',
+      subtitle: 'Nơi mọi câu chuyện bắt đầu',
+      floorA: Color(0xFFE9F7EC),
+      floorB: Color(0xFFD9F0DE),
+      hedge: Color(0xFF4FAE7C),
+      hedgeDark: Color(0xFF2F7F57),
+    ),
+  ),
+  LevelConfig(
+    9, 9, 3, 2,
+    LevelTheme(
+      name: 'Vườn hoa tri ân',
+      subtitle: 'Mỗi bông hoa một lời cảm ơn',
+      floorA: Color(0xFFFFF3E3),
+      floorB: Color(0xFFFFE8D0),
+      hedge: Color(0xFFF08BA3),
+      hedgeDark: Color(0xFFC2506B),
+    ),
+  ),
+  LevelConfig(
+    11, 11, 3, 2,
+    LevelTheme(
+      name: 'Hành lang kỷ niệm',
+      subtitle: 'Những ngày tháng không quên',
+      floorA: Color(0xFFFFF8E1),
+      floorB: Color(0xFFFFEFC2),
+      hedge: Color(0xFFB08968),
+      hedgeDark: Color(0xFF7A5A40),
+    ),
+  ),
 ];
+
+const LevelTheme _classroomTheme = LevelTheme(
+  name: 'Lớp học',
+  subtitle: '',
+  floorA: Colors.white,
+  floorB: Colors.white,
+  hedge: Colors.brown,
+  hedgeDark: Colors.brown,
+);
 
 class GameScreen extends StatefulWidget {
   final Teacher teacher;
@@ -33,38 +81,49 @@ class _GameScreenState extends State<GameScreen> {
   final _focus = FocusNode();
   final _rng = Random();
   late final List<String> _wishPool = List.of(kWishes)..shuffle(_rng);
+  late final ConfettiController _confetti =
+      ConfettiController(duration: const Duration(seconds: 2));
+
+  // Vị trí người chơi nằm trong ValueNotifier => di chuyển chỉ rebuild lớp nhân vật,
+  // không setState cả màn hình.
+  final ValueNotifier<Point<int>> _player = ValueNotifier(const Point(0, 0));
 
   int _level = 0;
   late Maze _maze;
-  late Point<int> _player;
-
-  int _levelFlowers = 0, _levelLetters = 0;
-  int _totalFlowers = 0;
+  int _levelFlowers = 0, _levelLetters = 0, _totalFlowers = 0;
   final List<String> _collectedWishes = [];
 
-
+  bool _classroom = false;
   bool _dialogOpen = false;
-  bool _isFinalRoom = false;
   Offset _dragAcc = Offset.zero;
 
   Timer? _moveTimer;
   final Set<LogicalKeyboardKey> _pressedKeys = {};
 
+  String? _flashMsg;
+  IconData _flashIcon = Icons.mail;
+  Timer? _flashTimer;
 
-  LevelConfig get _cfg => _isFinalRoom ? const LevelConfig(7, 7, 0, 0) : kLevels[_level];
+  LevelConfig get _cfg => kLevels[_level];
   bool get _exitOpen =>
-      _levelFlowers >= kLevels[_level].maxFlowers && _levelLetters >= kLevels[_level].maxLetters;
+      _levelFlowers >= _cfg.maxFlowers && _levelLetters >= _cfg.maxLetters;
 
   @override
   void initState() {
     super.initState();
-    playBgmNormal();
     _loadLevel();
+    // Nhạc nền: đảm bảo đã bắt đầu & ở âm lượng bình thường.
+    final audio = context.read<AudioService>();
+    audio.setSoft(false);
+    audio.start();
   }
 
   @override
   void dispose() {
     _moveTimer?.cancel();
+    _flashTimer?.cancel();
+    _confetti.dispose();
+    _player.dispose();
     _focus.dispose();
     super.dispose();
   }
@@ -77,144 +136,83 @@ class _GameScreenState extends State<GameScreen> {
       letterCount: _cfg.maxLetters,
       random: _rng,
     );
-    _player = _maze.start;
+    _player.value = _maze.start;
     _levelFlowers = 0;
     _levelLetters = 0;
   }
 
-  void _generateEmptyRoom() {
-    _maze = MazeGenerator.generate(
-      rows: 7,
-      cols: 7,
-      flowerCount: 0,
-      letterCount: 0,
-      random: _rng,
-    );
-    // remove all walls
-    for (var r = 0; r < 7; r++) {
-      for (var c = 0; c < 7; c++) {
-        _maze.cells[r][c].top = false;
-        _maze.cells[r][c].right = false;
-        _maze.cells[r][c].bottom = false;
-        _maze.cells[r][c].left = false;
-      }
-    }
-    _player = const Point(3, 6); // start at bottom middle
+  String _nextWish() => _wishPool.isNotEmpty
+      ? _wishPool.removeLast()
+      : kWishes[_rng.nextInt(kWishes.length)];
+
+  /// Thông báo nổi ở đầu màn hình (thay SnackBar, không cần tính toán margin).
+  void _flash(String msg, IconData icon) {
+    _flashTimer?.cancel();
+    setState(() {
+      _flashMsg = msg;
+      _flashIcon = icon;
+    });
+    _flashTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _flashMsg = null);
+    });
   }
 
-  void _playGiftAnimation() async {
-    while (_player.y > 3) {
-      await Future.delayed(const Duration(milliseconds: 300));
-      if (!mounted) return;
-      setState(() {
-        _player = Point(_player.x, _player.y - 1);
-      });
-    }
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (!mounted) return;
-    
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Chúc mừng!'),
-        content: Text('Bạn đã gửi tặng bó hoa tươi thắm nhất đến ${widget.teacher.honorific.toLowerCase()} ${widget.teacher.name}!'),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Tiếp tục'),
-          )
-        ],
-      ),
-    );
-    
-    if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => TributeScreen(
-        teacher: widget.teacher,
-        flowers: _totalFlowers,
-        wishes: List.of(_collectedWishes),
-      ),
-    ));
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  String _nextWish() =>
-      _wishPool.isNotEmpty ? _wishPool.removeLast() : kWishes[_rng.nextInt(kWishes.length)];
-
-  void _toast(String msg) {
-    final isMobile = MediaQuery.of(context).size.width < 700;
-    final screenHeight = MediaQuery.of(context).size.height;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text(msg), 
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-        dismissDirection: isMobile ? DismissDirection.up : DismissDirection.down,
-        margin: EdgeInsets.only(
-          bottom: isMobile ? (screenHeight - 140) : 20, 
-          left: 20, 
-          right: 20
-        ),
-      ));
+  void _stopMoving() {
+    _pressedKeys.clear();
+    _moveTimer?.cancel();
   }
 
   void _move(Dir d) {
-    if (_dialogOpen || _isFinalRoom || !_maze.canMove(_player, d)) return;
-    final next = _maze.step(_player, d);
-    String? toast;
-    setState(() {
-      _player = next;
-      if (_levelFlowers < _cfg.maxFlowers && _maze.flowers.remove(next)) {
-        _levelFlowers++;
-        _totalFlowers++;
-      }
-      if (_levelLetters < _cfg.maxLetters && _maze.letters.remove(next)) {
-        _levelLetters++;
-        final wish = _nextWish();
-        _collectedWishes.add(wish);
-        toast = 'Nhặt được lời chúc: "$wish"';
-      }
-    });
-    if (toast != null) _toast(toast!);
+    if (_dialogOpen || _classroom || !_maze.canMove(_player.value, d)) return;
+    final next = _maze.step(_player.value, d);
+    _player.value = next;
+
+    String? wish;
+    var collected = false;
+    if (_levelFlowers < _cfg.maxFlowers && _maze.flowers.remove(next)) {
+      _levelFlowers++;
+      _totalFlowers++;
+      collected = true;
+    }
+    if (_levelLetters < _cfg.maxLetters && _maze.letters.remove(next)) {
+      _levelLetters++;
+      wish = _nextWish();
+      _collectedWishes.add(wish);
+      collected = true;
+    }
+    if (collected) setState(() {}); // cập nhật HUD (hiếm khi xảy ra)
+    if (wish != null) _flash(wish, Icons.mail_rounded);
     if (next == _maze.exit) _onReachExit();
   }
 
   Future<void> _onReachExit() async {
-    _pressedKeys.clear();
-    _moveTimer?.cancel();
+    _stopMoving();
     if (!_exitOpen) {
-      _toast('Cửa ra chưa mở! Hãy nhặt đủ hoa và thư trong ải này.');
+      _flash('Cổng trường chưa mở! Hãy nhặt đủ hoa và thư trong ải này nhé.',
+          Icons.lock_outline_rounded);
       return;
     }
     _dialogOpen = true;
-    final lastMaze = _level == kLevels.length - 1;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text('Qua ải ${_level + 1}!'),
-        content: Text(lastMaze
-            ? 'Bạn đã vượt qua cả 3 ải. Hãy đi gặp ${widget.teacher.honorific.toLowerCase()} nào!'
-            : 'Bạn đã thu thập đủ hoa và thư. Sẵn sàng cho ải tiếp theo?'),
-        actions: [
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(lastMaze ? 'Gặp ${widget.teacher.honorific.toLowerCase()}' : 'Ải tiếp theo')),
-        ],
-      ),
+    _confetti.play();
+    await Future.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    final last = _level == kLevels.length - 1;
+    final h = widget.teacher.honorific.toLowerCase();
+    await _showCard(
+      title: 'Qua ải ${_level + 1}!',
+      body: last
+          ? 'Bạn đã đi hết ba ải. Giờ là lúc gặp $h và trao những điều đã gom góp.'
+          : 'Bạn đã gom đủ hoa và thư. Phía trước là "${kLevels[_level + 1].theme.name}".',
+      button: last ? 'Đi gặp $h' : 'Ải tiếp theo',
     );
     _dialogOpen = false;
     if (!mounted) return;
     _focus.requestFocus();
 
-    if (lastMaze) {
-      setState(() {
-        _isFinalRoom = true;
-        _generateEmptyRoom();
-      });
-      _playGiftAnimation();
+    if (last) {
+      setState(() => _classroom = true);
+      _player.value = const Point(3, 6);
+      _walkToTeacher();
     } else {
       setState(() {
         _level++;
@@ -223,14 +221,82 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
+  /// Màn cuối: nhân vật tự bước tới trao hoa cho thầy/cô.
+  Future<void> _walkToTeacher() async {
+    while (mounted && _player.value.y > 3) {
+      await Future.delayed(const Duration(milliseconds: 320));
+      if (!mounted) return;
+      _player.value = Point(3, _player.value.y - 1);
+    }
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (!mounted) return;
+    _confetti.play();
+    await Future.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
+    final t = widget.teacher;
+    await _showCard(
+      title: 'Chúc mừng ngày 20/11!',
+      body: 'Bạn đã trao bó hoa tươi thắm nhất đến ${t.honorific.toLowerCase()} ${t.name}. '
+          'Chắc ${t.honorific.toLowerCase()} sẽ rất vui đấy!',
+      button: 'Viết lời tri ân',
+    );
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => TributeScreen(
+        teacher: t,
+        flowers: _totalFlowers,
+        wishes: List.of(_collectedWishes),
+      ),
+    ));
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _showCard(
+      {required String title, required String body, required String button}) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppColors.paper,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FlowerIcon(size: 34),
+                  SizedBox(width: 8),
+                  LetterIcon(size: 34),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(title, textAlign: TextAlign.center, style: scriptStyle(32)),
+              const SizedBox(height: 8),
+              Text(body, textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              FilledButton(onPressed: () => Navigator.pop(ctx), child: Text(button)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------- Điều khiển ----------------
+
   void _handleMovement() {
-    if (_pressedKeys.contains(LogicalKeyboardKey.arrowUp) || _pressedKeys.contains(LogicalKeyboardKey.keyW)) {
+    bool k(LogicalKeyboardKey a, LogicalKeyboardKey b) =>
+        _pressedKeys.contains(a) || _pressedKeys.contains(b);
+    if (k(LogicalKeyboardKey.arrowUp, LogicalKeyboardKey.keyW)) {
       _move(Dir.up);
-    } else if (_pressedKeys.contains(LogicalKeyboardKey.arrowDown) || _pressedKeys.contains(LogicalKeyboardKey.keyS)) {
+    } else if (k(LogicalKeyboardKey.arrowDown, LogicalKeyboardKey.keyS)) {
       _move(Dir.down);
-    } else if (_pressedKeys.contains(LogicalKeyboardKey.arrowLeft) || _pressedKeys.contains(LogicalKeyboardKey.keyA)) {
+    } else if (k(LogicalKeyboardKey.arrowLeft, LogicalKeyboardKey.keyA)) {
       _move(Dir.left);
-    } else if (_pressedKeys.contains(LogicalKeyboardKey.arrowRight) || _pressedKeys.contains(LogicalKeyboardKey.keyD)) {
+    } else if (k(LogicalKeyboardKey.arrowRight, LogicalKeyboardKey.keyD)) {
       _move(Dir.right);
     }
   }
@@ -240,20 +306,18 @@ class _GameScreenState extends State<GameScreen> {
       _pressedKeys.add(e.logicalKey);
       if (_moveTimer == null || !_moveTimer!.isActive) {
         _handleMovement();
-        _moveTimer = Timer.periodic(const Duration(milliseconds: 130), (_) => _handleMovement());
+        _moveTimer = Timer.periodic(
+            const Duration(milliseconds: 130), (_) => _handleMovement());
       }
     } else if (e is KeyUpEvent) {
       _pressedKeys.remove(e.logicalKey);
-      if (_pressedKeys.isEmpty) {
-        _moveTimer?.cancel();
-      }
+      if (_pressedKeys.isEmpty) _moveTimer?.cancel();
     }
   }
 
   void _onPanUpdate(DragUpdateDetails d) {
     _dragAcc += d.delta;
-    const threshold = 24.0;
-    if (_dragAcc.distance < threshold) return;
+    if (_dragAcc.distance < 24) return;
     if (_dragAcc.dx.abs() > _dragAcc.dy.abs()) {
       _move(_dragAcc.dx > 0 ? Dir.right : Dir.left);
     } else {
@@ -262,56 +326,115 @@ class _GameScreenState extends State<GameScreen> {
     _dragAcc = Offset.zero;
   }
 
+  // ---------------- Giao diện ----------------
+
   @override
   Widget build(BuildContext context) {
     final narrow = MediaQuery.sizeOf(context).width < 700;
-    return Scaffold(
-      appBar: AppBar(title: Text('Tặng hoa cho ${widget.teacher.displayName}')),
-      body: KeyboardListener(
-        focusNode: _focus,
-        autofocus: true,
-        onKeyEvent: _onKeyEvent,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _focus.requestFocus,
-          onPanUpdate: _onPanUpdate,
-          onPanEnd: (_) => _dragAcc = Offset.zero,
-          child: SafeArea(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 640),
-                child: Column(
-                  children: [
-                    if (!_isFinalRoom) _hud(),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Center(
-                          child: AspectRatio(
-                            aspectRatio: _cfg.cols / _cfg.rows,
-                            child: MazeView(
-                              maze: _maze,
-                              player: _player,
-                              exitOpen: _exitOpen,
-                              isFinalRoom: _isFinalRoom,
-                              teacher: widget.teacher,
+    final cfg = _classroom ? null : _cfg;
+    return PetalBackground(
+      petals: 6,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          title: Text('Tặng hoa ${widget.teacher.honorific.toLowerCase()} ${widget.teacher.name.split(' ').last}'),
+          actions: const [MuteButton()],
+        ),
+        body: KeyboardListener(
+          focusNode: _focus,
+          autofocus: true,
+          onKeyEvent: _onKeyEvent,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _focus.requestFocus,
+            onPanUpdate: _onPanUpdate,
+            onPanEnd: (_) => _dragAcc = Offset.zero,
+            child: SafeArea(
+              child: Stack(
+                children: [
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 640),
+                      child: Column(
+                        children: [
+                          if (cfg != null) _hud(cfg),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Center(
+                                child: AspectRatio(
+                                  aspectRatio: _classroom ? 1 : cfg!.cols / cfg.rows,
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(24),
+                                      boxShadow: kSoftShadow,
+                                    ),
+                                    child: MazeView(
+                                      rows: _classroom ? 7 : cfg!.rows,
+                                      cols: _classroom ? 7 : cfg!.cols,
+                                      maze: _classroom ? null : _maze,
+                                      player: _player,
+                                      exitOpen: _exitOpen,
+                                      classroom: _classroom,
+                                      theme: _classroom ? _classroomTheme : cfg!.theme,
+                                      teacher: widget.teacher,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
-                        ),
+                          if (narrow && !_classroom) _DPad(onMove: _move),
+                          if (!_classroom)
+                            Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Text(
+                                narrow
+                                    ? 'Vuốt hoặc dùng nút mũi tên để di chuyển'
+                                    : 'Dùng phím mũi tên (hoặc W/A/S/D) để di chuyển',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                    if (narrow && !_isFinalRoom) _DPad(onMove: _move),
-                    if (!_isFinalRoom) Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Text(
-                        narrow
-                            ? 'Vuốt hoặc dùng nút mũi tên để di chuyển'
-                            : 'Dùng phím mũi tên (hoặc W/A/S/D) để di chuyển',
-                        style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  // Thông báo nổi
+                  Positioned(
+                    top: 8,
+                    left: 16,
+                    right: 16,
+                    child: IgnorePointer(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 250),
+                        child: _flashMsg == null
+                            ? const SizedBox.shrink(key: ValueKey('none'))
+                            : _FlashCard(
+                                key: ValueKey(_flashMsg),
+                                text: _flashMsg!,
+                                icon: _flashIcon),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  // Pháo hoa giấy hình trái tim
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: ConfettiWidget(
+                      confettiController: _confetti,
+                      blastDirectionality: BlastDirectionality.explosive,
+                      emissionFrequency: 0.06,
+                      numberOfParticles: 14,
+                      gravity: 0.25,
+                      createParticlePath: heartPath,
+                      colors: const [
+                        AppColors.rose,
+                        AppColors.gold,
+                        Color(0xFFFFA8BE),
+                        AppColors.leaf,
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -320,52 +443,110 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  Widget _hud() => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 4,
-          alignment: WrapAlignment.center,
+  Widget _hud(LevelConfig cfg) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+        child: Column(
           children: [
-            Chip(label: Text('Ải ${_level + 1}/${kLevels.length}')),
-            Chip(
-                avatar: const Icon(Icons.local_florist, color: Colors.pink, size: 18),
-                label: Text('Hoa $_levelFlowers/${_cfg.maxFlowers}')),
-            Chip(
-                avatar: const Icon(Icons.mail, color: Colors.orange, size: 18),
-                label: Text('Thư $_levelLetters/${_cfg.maxLetters}')),
-            Chip(
-                avatar: Icon(_exitOpen ? Icons.lock_open : Icons.lock,
-                    color: _exitOpen ? Colors.green : Colors.grey, size: 18),
-                label: Text(_exitOpen ? 'Cửa ra đã mở' : 'Cửa ra đang khoá')),
+            Text('Ải ${_level + 1} · ${cfg.theme.name}',
+                style: scriptStyle(26, color: AppColors.roseDark)),
+            Text(cfg.theme.subtitle, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              alignment: WrapAlignment.center,
+              children: [
+                _Pill(
+                    icon: const FlowerIcon(),
+                    text: '$_levelFlowers/${cfg.maxFlowers}'),
+                _Pill(
+                    icon: const LetterIcon(),
+                    text: '$_levelLetters/${cfg.maxLetters}'),
+                _Pill(
+                  icon: Icon(
+                      _exitOpen ? Icons.lock_open_rounded : Icons.lock_rounded,
+                      size: 20,
+                      color: _exitOpen ? AppColors.leaf : Colors.grey),
+                  text: _exitOpen ? 'Cổng đã mở' : 'Cổng đang khoá',
+                ),
+              ],
+            ),
           ],
         ),
       );
 }
 
+class _Pill extends StatelessWidget {
+  final Widget icon;
+  final String text;
+  const _Pill({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: kSoftShadow,
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          icon,
+          const SizedBox(width: 6),
+          Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ]),
+      );
+}
+
+class _FlashCard extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  const _FlashCard({super.key, required this.text, required this.icon});
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.paper,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.gold, width: 1.5),
+              boxShadow: kSoftShadow,
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, color: AppColors.rose),
+              const SizedBox(width: 10),
+              Flexible(child: Text(text)),
+            ]),
+          ),
+        ),
+      );
+}
+
+/// Nút điều hướng cho màn hình nhỏ (bổ trợ cho thao tác vuốt).
 class _DPad extends StatelessWidget {
   final void Function(Dir) onMove;
   const _DPad({required this.onMove});
 
-  Widget _btn(IconData icon, Dir d) =>
-      IconButton.filledTonal(onPressed: () => onMove(d), icon: Icon(icon));
+  Widget _btn(IconData icon, Dir d) => IconButton.filled(
+        onPressed: () => onMove(d),
+        style: IconButton.styleFrom(
+            backgroundColor: AppColors.blush, foregroundColor: AppColors.roseDark),
+        icon: Icon(icon),
+      );
 
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _btn(Icons.keyboard_arrow_up, Dir.up),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _btn(Icons.keyboard_arrow_left, Dir.left),
+  Widget build(BuildContext context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _btn(Icons.keyboard_arrow_up_rounded, Dir.up),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            _btn(Icons.keyboard_arrow_left_rounded, Dir.left),
             const SizedBox(width: 48),
-            _btn(Icons.keyboard_arrow_right, Dir.right),
-          ],
-        ),
-        _btn(Icons.keyboard_arrow_down, Dir.down),
-      ],
-    );
-  }
+            _btn(Icons.keyboard_arrow_right_rounded, Dir.right),
+          ]),
+          _btn(Icons.keyboard_arrow_down_rounded, Dir.down),
+        ],
+      );
 }

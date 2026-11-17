@@ -13,3 +13,12 @@ const List<String> kWishes = [
   'Chúc thầy cô mãi trẻ trung và yêu đời!',
   'Kính chúc thầy cô một ngày Nhà giáo Việt Nam ý nghĩa.',
 ];
+
+/// Câu tục ngữ về tình thầy trò, hiển thị ngẫu nhiên ở trang chủ.
+const List<String> kQuotes = [
+  'Một ngày để nhớ, cả đời để biết ơn.',
+  'Không thầy đố mày làm nên.',
+  'Muốn sang thì bắc cầu Kiều, muốn con hay chữ thì yêu lấy thầy.',
+  'Một chữ cũng là thầy, nửa chữ cũng là thầy.',
+  'Uống nước nhớ nguồn, ăn quả nhớ người trồng cây.',
+];
