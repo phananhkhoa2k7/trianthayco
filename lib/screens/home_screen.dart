@@ -11,6 +11,8 @@ import '../widgets/mute_button.dart';
 import '../widgets/petal_background.dart';
 import '../widgets/sprites.dart';
 import '../widgets/teacher_card.dart';
+import 'package:provider/provider.dart';
+import '../services/audio_service.dart';
 import '../widgets/teacher_detail_panel.dart';
 import 'teacher_detail_screen.dart';
 
@@ -137,6 +139,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       teacher: t,
                       selected: wide && t.id == selected?.id,
                       onTap: () {
+                        context.read<AudioService>().markUserInteraction();
                         if (wide) {
                           setState(() => _selected = t);
                         } else {

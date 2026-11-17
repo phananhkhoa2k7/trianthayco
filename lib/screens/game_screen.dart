@@ -23,7 +23,6 @@ class LevelConfig {
   const LevelConfig(this.rows, this.cols, this.maxFlowers, this.maxLetters, this.theme);
 }
 
-/// 3 ải: mỗi ải một khung cảnh riêng, mê cung to dần.
 const List<LevelConfig> kLevels = [
   LevelConfig(
     7, 7, 3, 2,
@@ -84,8 +83,6 @@ class _GameScreenState extends State<GameScreen> {
   late final ConfettiController _confetti =
       ConfettiController(duration: const Duration(seconds: 2));
 
-  // Vị trí người chơi nằm trong ValueNotifier => di chuyển chỉ rebuild lớp nhân vật,
-  // không setState cả màn hình.
   final ValueNotifier<Point<int>> _player = ValueNotifier(const Point(0, 0));
 
   int _level = 0;
@@ -102,6 +99,7 @@ class _GameScreenState extends State<GameScreen> {
 
   String? _flashMsg;
   IconData _flashIcon = Icons.mail;
+  int _flashId = 0; // Key duy nhất đảm bảo thông báo luôn hiện mỗi lần nhặt
   Timer? _flashTimer;
 
   LevelConfig get _cfg => kLevels[_level];
@@ -112,10 +110,12 @@ class _GameScreenState extends State<GameScreen> {
   void initState() {
     super.initState();
     _loadLevel();
-    // Nhạc nền: đảm bảo đã bắt đầu & ở âm lượng bình thường.
-    final audio = context.read<AudioService>();
-    audio.setSoft(false);
-    audio.start();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final audio = context.read<AudioService>();
+      audio.setSoft(false);
+      audio.start();
+    });
   }
 
   @override
@@ -141,18 +141,27 @@ class _GameScreenState extends State<GameScreen> {
     _levelLetters = 0;
   }
 
-  String _nextWish() => _wishPool.isNotEmpty
-      ? _wishPool.removeLast()
-      : kWishes[_rng.nextInt(kWishes.length)];
+  /// Cá nhân hóa lời chúc theo đúng xưng hô Thầy/Cô
+  String _personalizeWish(String raw) {
+    final h = widget.teacher.honorific.toLowerCase();
+    return raw.replaceAll('thầy cô', h).replaceAll('Thầy cô', widget.teacher.honorific);
+  }
 
-  /// Thông báo nổi ở đầu màn hình (thay SnackBar, không cần tính toán margin).
+  String _nextWish() {
+    final raw = _wishPool.isNotEmpty
+        ? _wishPool.removeLast()
+        : kWishes[_rng.nextInt(kWishes.length)];
+    return _personalizeWish(raw);
+  }
+
   void _flash(String msg, IconData icon) {
     _flashTimer?.cancel();
     setState(() {
+      _flashId++;
       _flashMsg = msg;
       _flashIcon = icon;
     });
-    _flashTimer = Timer(const Duration(seconds: 3), () {
+    _flashTimer = Timer(const Duration(milliseconds: 3200), () {
       if (mounted) setState(() => _flashMsg = null);
     });
   }
@@ -163,25 +172,37 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _move(Dir d) {
+    // Đảm bảo kích hoạt nhạc nền ngay khi người dùng thao tác di chuyển trên điện thoại
+    context.read<AudioService>().markUserInteraction();
+
     if (_dialogOpen || _classroom || !_maze.canMove(_player.value, d)) return;
     final next = _maze.step(_player.value, d);
     _player.value = next;
 
-    String? wish;
+    String? msg;
+    IconData icon = Icons.mail_rounded;
     var collected = false;
+    final h = widget.teacher.honorific.toLowerCase();
+
     if (_levelFlowers < _cfg.maxFlowers && _maze.flowers.remove(next)) {
       _levelFlowers++;
       _totalFlowers++;
       collected = true;
+      msg = 'Đã nhặt một bông hoa tươi thắm tặng $h! ($_levelFlowers/${_cfg.maxFlowers})';
+      icon = Icons.local_florist_rounded;
     }
+
     if (_levelLetters < _cfg.maxLetters && _maze.letters.remove(next)) {
       _levelLetters++;
-      wish = _nextWish();
+      final wish = _nextWish();
       _collectedWishes.add(wish);
       collected = true;
+      msg = wish;
+      icon = Icons.mail_rounded;
     }
-    if (collected) setState(() {}); // cập nhật HUD (hiếm khi xảy ra)
-    if (wish != null) _flash(wish, Icons.mail_rounded);
+
+    if (collected) setState(() {});
+    if (msg != null) _flash(msg, icon);
     if (next == _maze.exit) _onReachExit();
   }
 
@@ -194,7 +215,8 @@ class _GameScreenState extends State<GameScreen> {
     }
     _dialogOpen = true;
     _confetti.play();
-    await Future.delayed(const Duration(milliseconds: 700));
+    // Chờ thêm một chút nếu vừa nhặt thư cuối cùng ngay sát cổng để người chơi kịp đọc lời chúc
+    await Future.delayed(const Duration(milliseconds: 1100));
     if (!mounted) return;
     final last = _level == kLevels.length - 1;
     final h = widget.teacher.honorific.toLowerCase();
@@ -221,7 +243,6 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
-  /// Màn cuối: nhân vật tự bước tới trao hoa cho thầy/cô.
   Future<void> _walkToTeacher() async {
     while (mounted && _player.value.y > 3) {
       await Future.delayed(const Duration(milliseconds: 320));
@@ -285,8 +306,6 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  // ---------------- Điều khiển ----------------
-
   void _handleMovement() {
     bool k(LogicalKeyboardKey a, LogicalKeyboardKey b) =>
         _pressedKeys.contains(a) || _pressedKeys.contains(b);
@@ -326,115 +345,124 @@ class _GameScreenState extends State<GameScreen> {
     _dragAcc = Offset.zero;
   }
 
-  // ---------------- Giao diện ----------------
-
   @override
   Widget build(BuildContext context) {
     final narrow = MediaQuery.sizeOf(context).width < 700;
     final cfg = _classroom ? null : _cfg;
-    return PetalBackground(
-      petals: 6,
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          title: Text('Tặng hoa ${widget.teacher.honorific.toLowerCase()} ${widget.teacher.name.split(' ').last}'),
-          actions: const [MuteButton()],
-        ),
-        body: KeyboardListener(
-          focusNode: _focus,
-          autofocus: true,
-          onKeyEvent: _onKeyEvent,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _focus.requestFocus,
-            onPanUpdate: _onPanUpdate,
-            onPanEnd: (_) => _dragAcc = Offset.zero,
-            child: SafeArea(
-              child: Stack(
-                children: [
-                  Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 640),
-                      child: Column(
-                        children: [
-                          if (cfg != null) _hud(cfg),
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Center(
-                                child: AspectRatio(
-                                  aspectRatio: _classroom ? 1 : cfg!.cols / cfg.rows,
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(24),
-                                      boxShadow: kSoftShadow,
-                                    ),
-                                    child: MazeView(
-                                      rows: _classroom ? 7 : cfg!.rows,
-                                      cols: _classroom ? 7 : cfg!.cols,
-                                      maze: _classroom ? null : _maze,
-                                      player: _player,
-                                      exitOpen: _exitOpen,
-                                      classroom: _classroom,
-                                      theme: _classroom ? _classroomTheme : cfg!.theme,
-                                      teacher: widget.teacher,
-                                    ),
-                                  ),
+    return Listener(
+      onPointerDown: (_) => context.read<AudioService>().markUserInteraction(),
+      child: PetalBackground(
+        petals: 6,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            title: Text(
+                'Tặng hoa ${widget.teacher.honorific.toLowerCase()} ${widget.teacher.name.split(' ').last}'),
+            actions: const [MuteButton()],
+          ),
+          body: KeyboardListener(
+            focusNode: _focus,
+            autofocus: true,
+            onKeyEvent: _onKeyEvent,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _focus.requestFocus,
+              onPanUpdate: _onPanUpdate,
+              onPanEnd: (_) => _dragAcc = Offset.zero,
+              child: SafeArea(
+                child: Stack(
+                  children: [
+                    Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 640),
+                        child: Column(
+                          children: [
+                            if (cfg != null) _hud(cfg),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final side = min(
+                                      min(constraints.maxWidth, constraints.maxHeight),
+                                      500.0,
+                                    );
+                                    return Center(
+                                      child: SizedBox(
+                                        width: side,
+                                        height: side,
+                                        child: DecoratedBox(
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(24),
+                                            boxShadow: kSoftShadow,
+                                          ),
+                                          child: MazeView(
+                                            rows: _classroom ? 7 : cfg!.rows,
+                                            cols: _classroom ? 7 : cfg!.cols,
+                                            maze: _classroom ? null : _maze,
+                                            player: _player,
+                                            exitOpen: _exitOpen,
+                                            classroom: _classroom,
+                                            theme: _classroom ? _classroomTheme : cfg!.theme,
+                                            teacher: widget.teacher,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
                               ),
                             ),
-                          ),
-                          if (narrow && !_classroom) _DPad(onMove: _move),
-                          if (!_classroom)
-                            Padding(
-                              padding: const EdgeInsets.all(8),
-                              child: Text(
-                                narrow
-                                    ? 'Vuốt hoặc dùng nút mũi tên để di chuyển'
-                                    : 'Dùng phím mũi tên (hoặc W/A/S/D) để di chuyển',
-                                style: Theme.of(context).textTheme.bodySmall,
+                            if (narrow && !_classroom) _DPad(onMove: _move),
+                            if (!_classroom)
+                              Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Text(
+                                  narrow
+                                      ? 'Vuốt hoặc dùng nút mũi tên để di chuyển'
+                                      : 'Dùng phím mũi tên (hoặc W/A/S/D) để di chuyển',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
                               ),
-                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: 8,
+                      left: 16,
+                      right: 16,
+                      child: IgnorePointer(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 250),
+                          child: _flashMsg == null
+                              ? const SizedBox.shrink(key: ValueKey('none'))
+                              : _FlashCard(
+                                  key: ValueKey('flash_$_flashId'),
+                                  text: _flashMsg!,
+                                  icon: _flashIcon),
+                        ),
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.topCenter,
+                      child: ConfettiWidget(
+                        confettiController: _confetti,
+                        blastDirectionality: BlastDirectionality.explosive,
+                        emissionFrequency: 0.06,
+                        numberOfParticles: 14,
+                        gravity: 0.25,
+                        createParticlePath: heartPath,
+                        colors: const [
+                          AppColors.rose,
+                          AppColors.gold,
+                          Color(0xFFFFA8BE),
+                          AppColors.leaf,
                         ],
                       ),
                     ),
-                  ),
-                  // Thông báo nổi
-                  Positioned(
-                    top: 8,
-                    left: 16,
-                    right: 16,
-                    child: IgnorePointer(
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 250),
-                        child: _flashMsg == null
-                            ? const SizedBox.shrink(key: ValueKey('none'))
-                            : _FlashCard(
-                                key: ValueKey(_flashMsg),
-                                text: _flashMsg!,
-                                icon: _flashIcon),
-                      ),
-                    ),
-                  ),
-                  // Pháo hoa giấy hình trái tim
-                  Align(
-                    alignment: Alignment.topCenter,
-                    child: ConfettiWidget(
-                      confettiController: _confetti,
-                      blastDirectionality: BlastDirectionality.explosive,
-                      emissionFrequency: 0.06,
-                      numberOfParticles: 14,
-                      gravity: 0.25,
-                      createParticlePath: heartPath,
-                      colors: const [
-                        AppColors.rose,
-                        AppColors.gold,
-                        Color(0xFFFFA8BE),
-                        AppColors.leaf,
-                      ],
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -446,30 +474,35 @@ class _GameScreenState extends State<GameScreen> {
   Widget _hud(LevelConfig cfg) => Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text('Ải ${_level + 1} · ${cfg.theme.name}',
                 style: scriptStyle(26, color: AppColors.roseDark)),
             Text(cfg.theme.subtitle, style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              alignment: WrapAlignment.center,
-              children: [
-                _Pill(
-                    icon: const FlowerIcon(),
-                    text: '$_levelFlowers/${cfg.maxFlowers}'),
-                _Pill(
-                    icon: const LetterIcon(),
-                    text: '$_levelLetters/${cfg.maxLetters}'),
-                _Pill(
-                  icon: Icon(
-                      _exitOpen ? Icons.lock_open_rounded : Icons.lock_rounded,
-                      size: 20,
-                      color: _exitOpen ? AppColors.leaf : Colors.grey),
-                  text: _exitOpen ? 'Cổng đã mở' : 'Cổng đang khoá',
-                ),
-              ],
+            // Dùng FittedBox giữ tất cả các thẻ trên đúng 1 hàng ngang duy nhất -> Không bao giờ rớt dòng làm thay đổi chiều cao mê cung
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _Pill(
+                      icon: const FlowerIcon(),
+                      text: '$_levelFlowers/${cfg.maxFlowers}'),
+                  const SizedBox(width: 8),
+                  _Pill(
+                      icon: const LetterIcon(),
+                      text: '$_levelLetters/${cfg.maxLetters}'),
+                  const SizedBox(width: 8),
+                  _Pill(
+                    icon: Icon(
+                        _exitOpen ? Icons.lock_open_rounded : Icons.lock_rounded,
+                        size: 20,
+                        color: _exitOpen ? AppColors.leaf : Colors.grey),
+                    text: _exitOpen ? 'Cổng đã mở' : 'Cổng đang khoá',
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -524,7 +557,6 @@ class _FlashCard extends StatelessWidget {
       );
 }
 
-/// Nút điều hướng cho màn hình nhỏ (bổ trợ cho thao tác vuốt).
 class _DPad extends StatelessWidget {
   final void Function(Dir) onMove;
   const _DPad({required this.onMove});
