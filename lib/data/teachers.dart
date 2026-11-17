@@ -109,7 +109,7 @@ const List<Teacher> kTeachers = [
     major: 'Khoa học máy tính',
     courses: ['Lập trình Python', 'Thực hành lập trình Python', 'Tin học đại cương', 'Trí tuệ nhân tạo và ứng dụng'],
     department: 'KHTN CN',
-    isMale: false,
+    isMale: true,
   ),
   Teacher(
     id: 't11',
